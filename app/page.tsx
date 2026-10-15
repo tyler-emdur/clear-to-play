@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PLACES } from "@/lib/places";
 import { ACTION_LABEL, type Action, type IntensityId } from "@/lib/policy";
 
@@ -97,6 +97,7 @@ export default function Page() {
   const [day, setDay] = useState<Day | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
+  const settled = useRef(false);
 
   useEffect(() => {
     const ctl = new AbortController();
@@ -110,7 +111,16 @@ export default function Page() {
         if (!r.ok) throw new Error(json.error ?? `request failed (${r.status})`);
         return json as Day;
       })
-      .then((d) => { setDay(d); setError(null); })
+      .then((d) => {
+        setDay(d); setError(null);
+        // AirNow posts an hour roughly an hour after it ends, so the last elapsed
+        // hour is often still missing. Land on the most recent hour that can
+        // actually be answered, once, rather than opening on a refusal.
+        if (!settled.current) {
+          settled.current = true;
+          if (!d.selected.action && d.latestWithReadings !== null) setHour(d.latestWithReadings);
+        }
+      })
       .catch((e: unknown) => {
         if (e instanceof DOMException && e.name === "AbortError") return;
         setError(e instanceof Error ? e.message : "something went wrong");
@@ -124,6 +134,7 @@ export default function Page() {
     [day],
   );
 
+  const replaying = date !== denverToday();
   const sel = day?.selected;
   const keyColor = sel?.band ? BAND_COLOR[sel.band.id] ?? "var(--band-unknown)" : "var(--band-unknown)";
 
@@ -193,11 +204,6 @@ export default function Page() {
           </select>
         </label>
 
-        <label className="field">
-          <span>Date</span>
-          <input type="date" value={date} max={denverToday()} onChange={(e) => setDate(e.target.value)} />
-        </label>
-
         <div className="field toggle">
           <input id="sens" type="checkbox" checked={sensitive} onChange={(e) => setSensitive(e.target.checked)} />
           <label htmlFor="sens">Asthma on the field</label>
@@ -205,9 +211,13 @@ export default function Page() {
 
         <button
           className="replay"
-          onClick={() => { setDate("2021-08-07"); setHour(16); }}
+          onClick={() =>
+            replaying
+              ? (settled.current = false, setDate(denverToday()), setHour(Math.max(0, denverHour() - 1)))
+              : (setDate("2021-08-07"), setHour(16))
+          }
         >
-          Load Aug 7, 2021 smoke day
+          {replaying ? "Back to live conditions" : "Load Aug 7, 2021 smoke day"}
         </button>
       </div>
 
