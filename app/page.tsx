@@ -214,10 +214,10 @@ export default function Page() {
           onClick={() =>
             replaying
               ? (settled.current = false, setDate(denverToday()), setHour(Math.max(0, denverHour() - 1)))
-              : (setDate("2021-08-07"), setHour(16))
+              : (setDate("2024-08-01"), setHour(9))
           }
         >
-          {replaying ? "Back to live conditions" : "Load Aug 7, 2021 smoke day"}
+          {replaying ? "Back to live conditions" : "Load Aug 1, 2024 smoke day"}
         </button>
       </div>
 

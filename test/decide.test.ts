@@ -12,12 +12,23 @@ const pad = (n: number) => String(n).padStart(2, "0");
 
 const sites = parseSites(readFileSync(join(FX, "sites-co.dat"), "utf8"));
 
-/** Observations for the UTC hour that contains the given Aug 7 2021 local hour. */
-function obsForLocalHour(hour: number): { at: Date; observations: Observation[] } {
-  const at = localHourToUtc(2021, 8, 7, hour);
+/** Observations for the UTC hour that contains the given Boulder-local hour. */
+function obsForLocalHour(
+  hour: number, y = 2021, m = 8, d = 7,
+): { at: Date; observations: Observation[] } {
+  const at = localHourToUtc(y, m, d, hour);
   const stamp = `${at.getUTCFullYear()}${pad(at.getUTCMonth() + 1)}${pad(at.getUTCDate())}${pad(at.getUTCHours())}`;
   const observations = parseHourly(readFileSync(join(FX, `hourly-${stamp}.dat`), "utf8"));
   return { at, observations };
+}
+
+/** The day the app replays: Thu Aug 1 2024, the Front Range's worst recent smoke morning. */
+function aug2024(
+  place: { name: string; lat: number; lon: number }, hour: number,
+  intensity: IntensityId = "vigorous", sensitiveAthletes = false,
+): Decision {
+  const { at, observations } = obsForLocalHour(hour, 2024, 8, 1);
+  return decide({ policy, place, sites, observations, at, feed: "ok", intensity, sensitiveAthletes });
 }
 
 const BOULDER_HIGH = { name: "Boulder High School", lat: 40.0150, lon: -105.2797 };
@@ -150,6 +161,61 @@ describe("the engine declines when the evidence cannot carry a recommendation", 
     expect(d.action).toBe("proceed_with_precautions");
     expect(d.decidedOnPm25).toBe(34.0);
     expect(d.reasons.join(" ")).toMatch(/disagree/);
+  });
+});
+
+describe("Boulder High, Thursday Aug 1 2024 — the replay the app ships", () => {
+  it("cancels a 9am practice at 75.5 ug/m3", () => {
+    const d = aug2024(BOULDER_HIGH, 9, "vigorous");
+    expect(d.decidedOnPm25).toBeCloseTo(75.5, 1);
+    expect(d.band?.aqiCategory).toBe("Unhealthy");
+    expect(d.action).toBe("cancel");
+    expect(d.confidence).toBe("firm");
+  });
+
+  it("clears the same practice by 2pm, five hours later", () => {
+    const d = aug2024(BOULDER_HIGH, 14, "vigorous");
+    expect(d.decidedOnPm25).toBeCloseTo(30.4, 1);
+    expect(d.band?.aqiCategory).toBe("Moderate");
+    expect(d.action).toBe("proceed");
+  });
+
+  it("reaches the opposite call in Fort Collins at the same hour", () => {
+    const boulder = aug2024(BOULDER_HIGH, 9, "vigorous");
+    const fortCollins = aug2024(CENTENNIAL_FC, 9, "vigorous");
+    expect(fortCollins.decidedOnPm25).toBeCloseTo(19.4, 1);
+    expect(fortCollins.band?.aqiCategory).toBe("Moderate");
+    expect(fortCollins.action).toBe("proceed");
+    // Same state, same hour, same sport: one cancels and one goes ahead.
+    expect(boulder.action).toBe("cancel");
+    expect(ACTION_SEVERITY[boulder.action!])
+      .toBeGreaterThan(ACTION_SEVERITY[fortCollins.action!]);
+  });
+
+  it("points a cancelled 9am session at the nearest clear window", () => {
+    const hours = Array.from({ length: 24 }, (_, hour) => ({
+      hour, decision: aug2024(BOULDER_HIGH, hour, "vigorous"),
+    }));
+    const alt = suggestAlternative(hours, 9);
+    expect(alt).not.toBeNull();
+    expect(alt!.decision.action).toBe("proceed");
+    // 7am, two hours before the smoke arrived, is the closest clear hour to 9am.
+    // The ranking is best call first and nearest hour second, so it beats the
+    // equally clear afternoon.
+    expect(alt!.hour).toBe(7);
+    expect(alt!.decision.decidedOnPm25).toBeCloseTo(23.9, 1);
+  });
+
+  it("keeps Longmont's 152.7 spike out of a Boulder call 14 mi away", () => {
+    const d = aug2024(BOULDER_HIGH, 5, "vigorous");
+    const longmont = d.monitors.find((m) => m.siteName.includes("Longmont"));
+    expect(longmont?.value).toBeCloseTo(152.7, 1);
+    expect(longmont?.used).toBe(false);
+    expect(longmont?.excludedCode).toBe("distance");
+    // Boulder was Moderate that hour. Averaging Longmont in would have cancelled
+    // a session that its own air did not justify cancelling.
+    expect(d.decidedOnPm25).toBeCloseTo(25.2, 1);
+    expect(d.band?.aqiCategory).toBe("Moderate");
   });
 });
 
