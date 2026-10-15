@@ -69,7 +69,8 @@ body { font-variant-numeric: tabular-nums; }
 .toggle input { width: 17px; height: 17px; accent-color: var(--accent); flex: none; }
 .toggle label { font-size: 14px; }
 .replay {
-  font: inherit; font-size: 13px; align-self: end; margin-bottom: 8px;
+  font: inherit; font-size: 13px; align-self: end; justify-self: start; margin-bottom: 8px;
+  white-space: nowrap;
   background: none; border: 1px solid var(--rule-strong); border-radius: 2px;
   padding: 7px 10px; color: var(--accent); cursor: pointer;
 }
@@ -102,6 +103,11 @@ body { font-variant-numeric: tabular-nums; }
 .verdict .instead { margin: 12px 0 0; font-size: 15px; }
 .verdict .instead b { font-weight: 600; }
 .verdict .nocall { color: var(--muted); font-size: 15px; max-width: 62ch; margin: 0; }
+.verdict .jump {
+  font: inherit; font-weight: 600; color: var(--accent); background: none;
+  border: 0; border-bottom: 1px solid currentColor; padding: 0; cursor: pointer;
+}
+.verdict .jump:hover { color: var(--ink); }
 
 /* ---------- hour strip ---------- */
 .strip { margin-top: 26px; }
@@ -152,6 +158,9 @@ td .exc { font-size: 13px; }
 @media (max-width: 560px) {
   .masthead .stamp { margin-left: 0; width: 100%; }
   .bars { height: 104px; }
+  /* Two columns are already tight here; the replay control gets its own row. */
+  .controls { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .replay { grid-column: 1 / -1; align-self: start; margin-bottom: 0; }
 }
 
 /* A stale call is worse than no call: fade the previous answer out while a new one loads. */

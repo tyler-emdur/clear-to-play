@@ -22,6 +22,7 @@ const BAND_COLOR: Record<string, string> = {
 
 type HourCell = {
   hour: number;
+  awaitingData: boolean;
   pm25: number | null;
   action: Action | null;
   confidence: string;
@@ -31,6 +32,15 @@ type HourCell = {
 type Monitor = {
   siteName: string; distanceMiles: number; value: number;
   ageMinutes: number; used: boolean; excluded?: string;
+  excludedCode?: "future" | "stale" | "distance";
+};
+
+// The table already carries distance and reading age in their own columns, so the
+// status cell says which limit was broken rather than restating the number.
+const EXCLUDED_SHORT: Record<string, string> = {
+  distance: "too far",
+  stale: "too old",
+  future: "stamped after the window",
 };
 
 type Day = {
@@ -49,6 +59,7 @@ type Day = {
     monitors: Monitor[];
     policyVersion: string;
   };
+  latestWithReadings: number | null;
   strip: HourCell[];
   alternative: { hour: number; pm25: number | null; action: Action | null; band: string | null } | null;
   policy: {
@@ -62,6 +73,10 @@ const denverToday = () =>
 const denverHour = () =>
   Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Denver", hour12: false, hour: "2-digit" })
     .format(new Date())) % 24;
+
+// Engine strings stay ASCII so a pasted decision record survives any mail client;
+// on screen they match the units shown everywhere else.
+const prettyUnits = (text: string) => text.replace(/ug\/m3/g, "\u00b5g/m\u00b3");
 
 const hourLabel = (h: number) =>
   `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? " AM" : " PM"}`;
@@ -236,7 +251,17 @@ export default function Page() {
                   )}
                 </>
               ) : (
-                <p className="nocall">{sel.reasons[0]}</p>
+                <>
+                  <p className="nocall">{sel.reasons[0]}</p>
+                  {day.latestWithReadings !== null && day.latestWithReadings !== day.hour && (
+                    <p className="instead">
+                      Latest window with readings:{" "}
+                      <button type="button" className="jump" onClick={() => setHour(day.latestWithReadings!)}>
+                        {hourLabel(day.latestWithReadings)}
+                      </button>
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </section>
@@ -251,9 +276,11 @@ export default function Page() {
                   data-sel={c.hour === day.hour ? 1 : 0}
                   data-alt={day.alternative?.hour === c.hour ? 1 : 0}
                   title={
-                    c.pm25 === null
-                      ? `${hourLabel(c.hour)} — no usable reading`
-                      : `${hourLabel(c.hour)} — ${c.pm25} µg/m³`
+                    c.pm25 !== null
+                      ? `${hourLabel(c.hour)} — ${c.pm25} µg/m³`
+                      : c.awaitingData
+                        ? `${hourLabel(c.hour)} — no readings yet`
+                        : `${hourLabel(c.hour)} — no usable reading`
                   }
                 >
                   <i
@@ -272,7 +299,7 @@ export default function Page() {
             </div>
             <p className="scalenote">
               Bars are square-root scaled to a {Math.round(peak)} µg/m³ peak. Grey bars are hours with no
-              usable reading. The caret marks the better window.
+              usable reading, or none published yet. The caret marks the better window.
             </p>
           </section>
 
@@ -290,7 +317,13 @@ export default function Page() {
               </thead>
               <tbody>
                 {sel.monitors.length === 0 && (
-                  <tr><td colSpan={5}>No PM2.5 monitor within range of this location.</td></tr>
+                  <tr>
+                    <td colSpan={5}>
+                      {day.strip[day.hour]?.awaitingData
+                        ? "This hour has no readings yet, so no monitor was consulted."
+                        : "No PM2.5 monitor within range of this location."}
+                    </td>
+                  </tr>
                 )}
                 {sel.monitors.map((m) => (
                   <tr key={m.siteName} data-used={m.used ? 1 : 0}>
@@ -298,7 +331,13 @@ export default function Page() {
                     <td className="num">{m.distanceMiles} mi</td>
                     <td className="num">{m.value}</td>
                     <td className="num">{m.ageMinutes} min</td>
-                    <td>{m.used ? "used" : <span className="exc">{m.excluded}</span>}</td>
+                    <td>
+                      {m.used ? "used" : (
+                        <span className="exc">
+                          {(m.excludedCode && EXCLUDED_SHORT[m.excludedCode]) ?? m.excluded}
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -306,9 +345,9 @@ export default function Page() {
           </section>
 
           <section className="why">
-            <h2>How this call was reached</h2>
+            <h2>{sel.action ? "How this call was reached" : "Why there is no call"}</h2>
             <ol>
-              {sel.reasons.map((r, i) => <li key={i}>{r}</li>)}
+              {sel.reasons.map((r, i) => <li key={i}>{prettyUnits(r)}</li>)}
             </ol>
             <button className="record" onClick={copyRecord}>Copy decision record</button>
           </section>

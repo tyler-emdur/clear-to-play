@@ -3,7 +3,7 @@ import {
   hourlyUrl, localHourToUtc, parseHourly, parseSites, SITES_URL,
   type Observation, type Site,
 } from "./airnow";
-import { decide, suggestAlternative, type Decision } from "./decide";
+import { decide, suggestAlternative, type Decision, type FeedStatus } from "./decide";
 import type { IntensityId, Policy } from "./policy";
 import { PLACES } from "./places";
 
@@ -27,13 +27,16 @@ export async function loadSites(): Promise<Site[]> {
 }
 
 /** Observations for one local Boulder hour. Past days never change, so cache them hard. */
-async function loadHour(y: number, m: number, d: number, hour: number, live: boolean) {
+async function loadHour(y: number, m: number, d: number, hour: number, live: boolean, now: number) {
   const at = localHourToUtc(y, m, d, hour);
+  const empty = { at, observations: [] as Observation[] };
+  // Hours that have not elapsed have no file to fetch, so don't ask for one.
+  if (at.getTime() > now) return { ...empty, feed: "not_yet_observed" as FeedStatus };
   try {
     const observations = parseHourly(await text(hourlyUrl(at), live ? 900 : false));
-    return { at, observations };
+    return { at, observations, feed: "ok" as FeedStatus };
   } catch {
-    return { at, observations: [] as Observation[] };
+    return { ...empty, feed: "not_published" as FeedStatus };
   }
 }
 
@@ -48,6 +51,8 @@ export type DayRequest = {
 
 export type HourCell = {
   hour: number;
+  /** True when the hour simply has no readings yet, rather than no usable ones. */
+  awaitingData: boolean;
   pm25: number | null;
   action: Decision["action"];
   confidence: Decision["confidence"];
@@ -62,20 +67,22 @@ export async function buildDay(req: DayRequest) {
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Denver" }).format(today) === req.date;
 
   const sites = await loadSites();
+  const now = today.getTime();
   const hours = await Promise.all(
-    Array.from({ length: 24 }, (_, hour) => loadHour(y, m, d, hour, isToday)),
+    Array.from({ length: 24 }, (_, hour) => loadHour(y, m, d, hour, isToday, now)),
   );
 
-  const decisions = hours.map(({ at, observations }, hour) => ({
+  const decisions = hours.map(({ at, observations, feed }, hour) => ({
     hour,
     decision: decide({
-      policy, place, sites, observations, at,
+      policy, place, sites, observations, at, feed,
       intensity: req.intensity, sensitiveAthletes: req.sensitive,
     }),
   }));
 
   const strip: HourCell[] = decisions.map(({ hour, decision }) => ({
     hour,
+    awaitingData: hours[hour].feed !== "ok",
     pm25: decision.decidedOnPm25,
     action: decision.action,
     confidence: decision.confidence,
@@ -84,6 +91,10 @@ export async function buildDay(req: DayRequest) {
 
   const selected = decisions[req.hour]?.decision ?? decisions[0].decision;
   const alternative = suggestAlternative(decisions, req.hour);
+  // The most recent hour the feed can actually answer for, so a refusal on an
+  // hour that isn't out yet can point somewhere useful instead of dead-ending.
+  const latestWithReadings =
+    decisions.filter((d) => d.decision.action !== null).map((d) => d.hour).pop() ?? null;
 
   return {
     place,
@@ -91,6 +102,7 @@ export async function buildDay(req: DayRequest) {
     isToday,
     hour: req.hour,
     selected,
+    latestWithReadings,
     strip,
     alternative: alternative
       ? {

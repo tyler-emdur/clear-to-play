@@ -6,13 +6,24 @@ import {
 
 export type Confidence = "firm" | "advisory" | "insufficient";
 
+/**
+ * Why the hour has no readings, decided by the caller because it needs a clock.
+ * Kept separate from "no monitor nearby" on purpose: a missing file is a timing
+ * fact about the feed, and reporting it as a gap in the monitor network would
+ * misstate the one thing this tool is built to show.
+ */
+export type FeedStatus = "ok" | "not_yet_observed" | "not_published";
+
 export type MonitorEvidence = {
   siteName: string;
   distanceMiles: number;
   value: number;
   ageMinutes: number;
   used: boolean;
+  /** Prose for the audit trail, which has to stand on its own. */
   excluded?: string;
+  /** The same fact as a code, for callers that already show distance and age. */
+  excludedCode?: "future" | "stale" | "distance";
 };
 
 export type Decision = {
@@ -37,6 +48,7 @@ export type DecideInput = {
   sites: Site[];
   observations: Observation[];
   at: Date;
+  feed: FeedStatus;
   intensity: IntensityId;
   sensitiveAthletes: boolean;
 };
@@ -72,7 +84,7 @@ function ruleFor(
  *    state the honest answer is "we don't know", and the engine says so.
  */
 export function decide(input: DecideInput): Decision {
-  const { policy, place, sites, observations, at, intensity, sensitiveAthletes } = input;
+  const { policy, place, sites, observations, at, feed, intensity, sensitiveAthletes } = input;
   const ev = policy.evidence;
   const byKey = new Map(sites.filter((s) => s.active).map((s) => [s.stationKey, s]));
 
@@ -87,9 +99,16 @@ export function decide(input: DecideInput): Decision {
       siteName: site.siteName, distanceMiles: Math.round(d * 10) / 10,
       value: o.value, ageMinutes: age, used: true,
     };
-    if (age < 0) { m.used = false; m.excluded = "reading is stamped after the decision time"; }
-    else if (age > ev.maxReadingAgeMinutes) { m.used = false; m.excluded = `reading is ${age} min old (limit ${ev.maxReadingAgeMinutes})`; }
-    else if (d > ev.maxTrustedDistanceMiles) { m.used = false; m.excluded = `${m.distanceMiles} mi away (limit ${ev.maxTrustedDistanceMiles})`; }
+    if (age < 0) {
+      m.used = false; m.excludedCode = "future";
+      m.excluded = "reading is stamped after the decision time";
+    } else if (age > ev.maxReadingAgeMinutes) {
+      m.used = false; m.excludedCode = "stale";
+      m.excluded = `reading is ${age} min old (limit ${ev.maxReadingAgeMinutes})`;
+    } else if (d > ev.maxTrustedDistanceMiles) {
+      m.used = false; m.excludedCode = "distance";
+      m.excluded = `${m.distanceMiles} mi away (limit ${ev.maxTrustedDistanceMiles})`;
+    }
     monitors.push(m);
   }
   monitors.sort((a, b) => a.distanceMiles - b.distanceMiles);
@@ -100,6 +119,19 @@ export function decide(input: DecideInput): Decision {
     reasons, monitors, policyVersion: policy.policyVersion, at,
   };
 
+  const unavailable = { ...base, action: null, confidence: "insufficient" as const, estimate: null, decidedOnPm25: null, band: null, rule: null };
+
+  if (feed === "not_yet_observed") {
+    reasons.push("That hour has not happened yet. This tool reports air that monitors have already measured, not a forecast.");
+    reasons.push("Check back once the hour has passed, or pick an hour earlier in the day.");
+    return unavailable;
+  }
+  if (feed === "not_published") {
+    reasons.push("AirNow has not published this hour yet. Hourly files usually appear about an hour after the hour ends.");
+    reasons.push("The monitors near here are reporting; this hour's readings are not out. Use the most recent hour that has them.");
+    return unavailable;
+  }
+
   if (used.length === 0) {
     const nearest = monitors[0];
     reasons.push(
@@ -108,7 +140,7 @@ export function decide(input: DecideInput): Decision {
         : `No PM2.5 monitor within ${ev.searchRadiusMiles} mi of ${place.name}.`,
     );
     reasons.push("This app will not issue a recommendation it cannot support. Treat conditions as unknown and use direct observation.");
-    return { ...base, action: null, confidence: "insufficient", estimate: null, decidedOnPm25: null, band: null, rule: null };
+    return unavailable;
   }
 
   // Inverse-distance weighting, floored so a monitor on the doorstep can't dominate absolutely.

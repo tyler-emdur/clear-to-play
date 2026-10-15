@@ -29,7 +29,7 @@ function call(
   intensity: IntensityId = "vigorous", sensitiveAthletes = false,
 ): Decision {
   const { at, observations } = obsForLocalHour(hour);
-  return decide({ policy, place, sites, observations, at, intensity, sensitiveAthletes });
+  return decide({ policy, place, sites, observations, at, feed: "ok", intensity, sensitiveAthletes });
 }
 
 describe("fixtures", () => {
@@ -128,7 +128,7 @@ describe("the engine declines when the evidence cannot carry a recommendation", 
     const fiveHoursLater = new Date(localHourToUtc(2021, 8, 7, 16).getTime() + 5 * 3600_000);
     const d = decide({
       policy, place: BOULDER_HIGH, sites, observations,
-      at: fiveHoursLater, intensity: "vigorous", sensitiveAthletes: false,
+      at: fiveHoursLater, feed: "ok", intensity: "vigorous", sensitiveAthletes: false,
     });
     expect(d.action).toBeNull();
     expect(d.monitors[0].excluded).toMatch(/min old/);
@@ -136,7 +136,7 @@ describe("the engine declines when the evidence cannot carry a recommendation", 
 
   it("drops to advisory and withholds a green light when monitors disagree", () => {
     const { at, observations } = obsForLocalHour(0); // Boulder CU 9.7 — a Moderate, proceed hour
-    const clean = decide({ policy, place: BOULDER_HIGH, sites, observations, at, intensity: "light", sensitiveAthletes: false });
+    const clean = decide({ policy, place: BOULDER_HIGH, sites, observations, at, feed: "ok", intensity: "light", sensitiveAthletes: false });
     expect(clean.action).toBe("proceed");
 
     const boulderCu = sites.find((s) => s.siteName.includes("Boulder - CU"))!;
@@ -145,11 +145,45 @@ describe("the engine declines when the evidence cannot carry a recommendation", 
       { stationKey: "999999999", siteName: "Synthetic co-located sensor", value: 34.0, unit: "UG/M3", observedAt: at },
     ];
     const extraSites = [...sites, { ...boulderCu, stationKey: "999999999", siteName: "Synthetic co-located sensor" }];
-    const d = decide({ policy, place: BOULDER_HIGH, sites: extraSites, observations: disagreeing, at, intensity: "light", sensitiveAthletes: false });
+    const d = decide({ policy, place: BOULDER_HIGH, sites: extraSites, observations: disagreeing, at, feed: "ok", intensity: "light", sensitiveAthletes: false });
     expect(d.confidence).toBe("advisory");
     expect(d.action).toBe("proceed_with_precautions");
     expect(d.decidedOnPm25).toBe(34.0);
     expect(d.reasons.join(" ")).toMatch(/disagree/);
+  });
+});
+
+describe("a missing hour is not a missing monitor", () => {
+  it("says the hour has not happened yet, and does not blame the monitor network", () => {
+    const at = localHourToUtc(2021, 8, 7, 16);
+    const d = decide({
+      policy, place: BOULDER_HIGH, sites, observations: [],
+      at, feed: "not_yet_observed", intensity: "vigorous", sensitiveAthletes: false,
+    });
+    expect(d.action).toBeNull();
+    expect(d.confidence).toBe("insufficient");
+    expect(d.reasons.join(" ")).toMatch(/has not happened yet/);
+    expect(d.reasons.join(" ")).not.toMatch(/No PM2.5 monitor within/);
+  });
+
+  it("says the hour is unpublished when AirNow has not posted the file", () => {
+    const at = localHourToUtc(2021, 8, 7, 16);
+    const d = decide({
+      policy, place: BOULDER_HIGH, sites, observations: [],
+      at, feed: "not_published", intensity: "vigorous", sensitiveAthletes: false,
+    });
+    expect(d.action).toBeNull();
+    expect(d.reasons.join(" ")).toMatch(/has not published this hour yet/);
+    expect(d.reasons.join(" ")).not.toMatch(/No PM2.5 monitor within/);
+  });
+
+  it("still blames the monitor network when the hour is published and nothing is near", () => {
+    const { at, observations } = obsForLocalHour(16);
+    const d = decide({
+      policy, place: { name: "Middle Park HS", lat: 40.0869, lon: -105.9372 }, sites,
+      observations, at, feed: "ok", intensity: "vigorous", sensitiveAthletes: false,
+    });
+    expect(d.reasons.join(" ")).toMatch(/No PM2.5 monitor within/);
   });
 });
 
