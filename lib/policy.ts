@@ -48,9 +48,12 @@ export const ACTION_SEVERITY: Record<Action, number> = {
   cancel: 5,
 };
 
+// Every label is an imperative a coach can act on without a second reading.
+// "Hold practice" is deliberately avoided: it reads as both "conduct" and
+// "halt", which is the one ambiguity this band cannot afford.
 export const ACTION_LABEL: Record<Action, string> = {
-  proceed: "Hold practice as planned",
-  proceed_with_precautions: "Hold practice, with precautions",
+  proceed: "Run practice as planned",
+  proceed_with_precautions: "Run practice, with precautions",
   shorten: "Shorten the session",
   reduce_intensity: "Lower the intensity",
   move_indoors: "Move indoors",
