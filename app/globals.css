@@ -109,16 +109,14 @@ body { font-variant-numeric: tabular-nums; }
   font-size: 14px; font-weight: 600; margin: 0 0 10px;
   padding-bottom: 6px; border-bottom: 1px solid var(--rule);
 }
-.bars { display: flex; align-items: flex-end; gap: 2px; height: 128px; }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 128px; border-bottom: 1px solid var(--rule-strong); }
 .bar { flex: 1 1 0; position: relative; height: 100%; display: flex; align-items: flex-end; min-width: 0; }
 .bar i {
   display: block; width: 100%; background: var(--band-unknown);
   transition: height 240ms ease, background-color 240ms ease;
 }
-.bar[data-sel="1"]::after {
-  content: ""; position: absolute; inset: -4px -2px -4px -2px;
-  border: 2px solid var(--ink); pointer-events: none;
-}
+.bar[data-sel="1"] { background: #dce3e7; box-shadow: inset 0 -3px 0 var(--ink); }
+.bar[data-sel="1"] i { outline: 2px solid var(--ink); outline-offset: -2px; }
 .bar[data-alt="1"]::before {
   content: ""; position: absolute; left: 50%; top: -11px; transform: translateX(-50%);
   border-left: 5px solid transparent; border-right: 5px solid transparent;
@@ -154,4 +152,17 @@ td .exc { font-size: 13px; }
 @media (max-width: 560px) {
   .masthead .stamp { margin-left: 0; width: 100%; }
   .bars { height: 104px; }
+}
+
+/* A stale call is worse than no call: fade the previous answer out while a new one loads. */
+.shell[data-pending="1"] .verdict,
+.shell[data-pending="1"] .strip,
+.shell[data-pending="1"] .evidence,
+.shell[data-pending="1"] .why { opacity: 0.32; transition: opacity 120ms ease; }
+.shell[data-pending="1"] .verdict { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .shell[data-pending="1"] .verdict,
+  .shell[data-pending="1"] .strip,
+  .shell[data-pending="1"] .evidence,
+  .shell[data-pending="1"] .why { transition: none; }
 }

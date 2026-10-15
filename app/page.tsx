@@ -141,7 +141,7 @@ export default function Page() {
   }, [day, sel, intensity, sensitive]);
 
   return (
-    <div className="shell">
+    <div className="shell" data-pending={pending ? 1 : 0}>
       <header className="masthead">
         <span className="wordmark">Clear to Play</span>
         <span className="where">Boulder Valley schools</span>
@@ -206,7 +206,8 @@ export default function Page() {
 
       {day && sel && (
         <>
-          <section className="verdict">
+          {pending && <p className="loading" role="status">Re-reading monitor data for this window…</p>}
+          <section className="verdict" aria-busy={pending}>
             <div className="key" style={{ background: keyColor }} aria-hidden />
             <div className="body">
               <h1 className="call">
