@@ -1,5 +1,6 @@
 import { distanceMiles } from "./geo";
 import type { Observation, Site } from "./airnow";
+import { aqiFromPm25, nowcastPm25 } from "./aqi";
 import {
   ACTION_SEVERITY, type Action, type Band, type IntensityId, type Policy, type Rule,
 } from "./policy";
@@ -17,23 +18,36 @@ export type FeedStatus = "ok" | "not_yet_observed" | "not_published";
 export type MonitorEvidence = {
   siteName: string;
   distanceMiles: number;
-  value: number;
+  /** The raw hourly concentration this monitor reported for the decision hour. */
+  rawPm25: number;
+  /** EPA NowCast concentration over the preceding 12 hours, if computable. */
+  nowcastPm25: number | null;
+  /** AQI from the NowCast, which is the number CHSAA's guidance is keyed on. */
+  aqi: number | null;
+  bandId: string | null;
   ageMinutes: number;
   used: boolean;
   /** Prose for the audit trail, which has to stand on its own. */
   excluded?: string;
   /** The same fact as a code, for callers that already show distance and age. */
-  excludedCode?: "future" | "stale" | "distance";
+  excludedCode?: "future" | "stale" | "distance" | "no_nowcast";
 };
 
 export type Decision = {
   /** null when the evidence cannot support any recommendation. */
   action: Action | null;
   confidence: Confidence;
-  /** Range across the monitors actually used. */
-  estimate: { value: number; low: number; high: number } | null;
-  /** The conservative end of the range, which the band is read from. */
+  /** The worst AQI the monitors actually measured. Never synthesised. */
+  decidedOnAqi: number | null;
+  /**
+   * Which assessment set the band. A visual range check has no AQI number of
+   * its own, so when it governs, the band is reported without inventing one.
+   */
+  decidedBy: "monitors" | "visual_range";
+  /** NowCast concentration behind that AQI, for people who read ug/m3. */
   decidedOnPm25: number | null;
+  /** Range of AQI across the monitors actually used. */
+  estimate: { low: number; high: number } | null;
   band: Band | null;
   rule: Rule | null;
   reasons: string[];
@@ -46,18 +60,36 @@ export type DecideInput = {
   policy: Policy;
   place: { name: string; lat: number; lon: number };
   sites: Site[];
+  /** Observations for the decision hour itself. */
   observations: Observation[];
+  /**
+   * The 12 hourly concentrations ending at the decision hour, per station key,
+   * most recent first, with nulls for missing hours. EPA's NowCast needs the
+   * history; without it the AQI cannot be computed the way CHSAA assumes.
+   */
+  history: Map<string, (number | null)[]>;
   at: Date;
   feed: FeedStatus;
   intensity: IntensityId;
   sensitiveAthletes: boolean;
+  /**
+   * The band a coach's own visual range check corresponds to, if they did one.
+   * CHSAA directs schools to compare it against the AQI and act on the worse
+   * of the two assessments.
+   */
+  visibilityBandId?: string | null;
 };
 
-function bandFor(policy: Policy, pm25: number): Band {
+function bandFor(policy: Policy, aqi: number): Band {
   for (const b of policy.bands) {
-    if (b.maxPm25 === null || pm25 <= b.maxPm25) return b;
+    if (b.maxAqi === null || aqi <= b.maxAqi) return b;
   }
   return policy.bands[policy.bands.length - 1];
+}
+
+function bandRank(policy: Policy, bandId: string): number {
+  const i = policy.bands.findIndex((b) => b.id === bandId);
+  return i < 0 ? 0 : i;
 }
 
 function ruleFor(
@@ -74,17 +106,27 @@ function ruleFor(
 }
 
 /**
- * Turns monitor readings into a recommendation, and declines when the readings
- * cannot support one. Pure: no clock, no network.
+ * Turns monitor readings into a recommendation under CHSAA's published guidance,
+ * and declines when the readings cannot support one. Pure: no clock, no network.
  *
- * Two deliberate choices:
- *  - The band is read from the HIGH end of the observed range, so the call errs toward caution.
- *  - Distance, reading age and monitor disagreement gate confidence rather than being
- *    reported as footnotes. Colorado has ~32 active PM2.5 monitors, so for much of the
- *    state the honest answer is "we don't know", and the engine says so.
+ * Four deliberate choices:
+ *  - The AQI comes from EPA's NowCast, not from the raw hourly concentration,
+ *    because that is the number CHSAA tells schools to look up and the number
+ *    the state's own map shows. lib/aqi.ts is checked against AirNow's
+ *    published AQI in the test suite.
+ *  - Where monitors disagree the call is made on the WORST of them, which is
+ *    CHSAA's own instruction for conflicting assessments.
+ *  - Distance, reading age and band disagreement gate confidence rather than
+ *    being reported as footnotes. Colorado has ~32 regulatory PM2.5 monitors,
+ *    so for much of the state the honest answer is "we don't know".
+ *  - A visual range check, if the user did one, is a second assessment under
+ *    that same worse-of-two rule.
  */
 export function decide(input: DecideInput): Decision {
-  const { policy, place, sites, observations, at, feed, intensity, sensitiveAthletes } = input;
+  const {
+    policy, place, sites, observations, history, at, feed,
+    intensity, sensitiveAthletes, visibilityBandId,
+  } = input;
   const ev = policy.evidence;
   const byKey = new Map(sites.filter((s) => s.active).map((s) => [s.stationKey, s]));
 
@@ -95,9 +137,20 @@ export function decide(input: DecideInput): Decision {
     const d = distanceMiles(place, site);
     if (d > ev.searchRadiusMiles) continue;
     const age = Math.round((at.getTime() - o.observedAt.getTime()) / 60000);
+
+    const series = history.get(o.stationKey) ?? [o.value];
+    const nc = nowcastPm25(series);
+    const aqi = nc ? aqiFromPm25(nc.concentration) : null;
+
     const m: MonitorEvidence = {
-      siteName: site.siteName, distanceMiles: Math.round(d * 10) / 10,
-      value: o.value, ageMinutes: age, used: true,
+      siteName: site.siteName,
+      distanceMiles: Math.round(d * 10) / 10,
+      rawPm25: o.value,
+      nowcastPm25: nc ? nc.concentration : null,
+      aqi,
+      bandId: aqi === null ? null : bandFor(policy, aqi).id,
+      ageMinutes: age,
+      used: true,
     };
     if (age < 0) {
       m.used = false; m.excludedCode = "future";
@@ -108,6 +161,9 @@ export function decide(input: DecideInput): Decision {
     } else if (d > ev.maxTrustedDistanceMiles) {
       m.used = false; m.excludedCode = "distance";
       m.excluded = `${m.distanceMiles} mi away (limit ${ev.maxTrustedDistanceMiles})`;
+    } else if (aqi === null) {
+      m.used = false; m.excludedCode = "no_nowcast";
+      m.excluded = "too few of the last 12 hours reported to compute a NowCast";
     }
     monitors.push(m);
   }
@@ -115,11 +171,14 @@ export function decide(input: DecideInput): Decision {
 
   const reasons: string[] = [];
   const used = monitors.filter((m) => m.used);
-  const base: Omit<Decision, "action" | "confidence" | "estimate" | "decidedOnPm25" | "band" | "rule"> = {
+  const base: Omit<Decision, "action" | "confidence" | "estimate" | "decidedOnAqi" | "decidedOnPm25" | "band" | "rule" | "decidedBy"> = {
     reasons, monitors, policyVersion: policy.policyVersion, at,
   };
-
-  const unavailable = { ...base, action: null, confidence: "insufficient" as const, estimate: null, decidedOnPm25: null, band: null, rule: null };
+  const unavailable = {
+    ...base, action: null, confidence: "insufficient" as const,
+    estimate: null, decidedOnAqi: null, decidedOnPm25: null, band: null, rule: null,
+    decidedBy: "monitors" as const,
+  };
 
   if (feed === "not_yet_observed") {
     reasons.push("That hour has not happened yet. This tool reports air that monitors have already measured, not a forecast.");
@@ -143,43 +202,59 @@ export function decide(input: DecideInput): Decision {
     return unavailable;
   }
 
-  // Inverse-distance weighting, floored so a monitor on the doorstep can't dominate absolutely.
-  let wsum = 0, vsum = 0;
-  for (const m of used) {
-    const w = 1 / Math.max(m.distanceMiles, 0.5) ** 2;
-    wsum += w; vsum += w * m.value;
-  }
-  const value = Math.round((vsum / wsum) * 10) / 10;
-  const low = Math.min(...used.map((m) => m.value));
-  const high = Math.max(...used.map((m) => m.value));
-  const spread = high - low;
+  const aqis = used.map((m) => m.aqi!);
+  const low = Math.min(...aqis);
+  const high = Math.max(...aqis);
 
   let confidence: Confidence = "firm";
   if (used.length === 1) {
-    reasons.push(`Single monitor: ${used[0].siteName}, ${used[0].distanceMiles} mi away, reading ${used[0].ageMinutes} min old. No second monitor nearby to cross-check against.`);
+    const m = used[0];
+    reasons.push(`Single monitor: ${m.siteName}, ${m.distanceMiles} mi away, reading ${m.ageMinutes} min old. No second monitor nearby to cross-check against.`);
   } else {
-    reasons.push(`${used.length} monitors within ${ev.maxTrustedDistanceMiles} mi, reading ${low}-${high} ug/m3 (spread ${Math.round(spread * 10) / 10}).`);
-    if (spread > ev.maxMonitorSpreadUgM3) {
-      confidence = "advisory";
-      reasons.push(`Monitors disagree by more than ${ev.maxMonitorSpreadUgM3} ug/m3, so the local value is uncertain.`);
-    }
+    reasons.push(`${used.length} monitors within ${ev.maxTrustedDistanceMiles} mi, reading AQI ${low}-${high}.`);
   }
+  reasons.push("AQI is EPA's NowCast over the last 12 hours, not the single raw hourly reading. That is the number CHSAA's guidance is keyed on and the number the state's map shows.");
+
   if (monitors.some((m) => !m.used)) {
     reasons.push(`Excluded: ${monitors.filter((m) => !m.used).map((m) => `${m.siteName} (${m.excluded})`).join("; ")}.`);
   }
 
-  const decidedOnPm25 = high;
-  if (used.length > 1 && high !== value) {
-    reasons.push(`Decided on ${decidedOnPm25} ug/m3, the high end of the range, so the recommendation errs toward caution.`);
+  // CHSAA: where two assessments conflict, follow the worse one.
+  const worst = used.reduce((a, b) => (b.aqi! > a.aqi! ? b : a));
+  const decidedOnAqi = worst.aqi!;
+  let band = bandFor(policy, decidedOnAqi);
+  let decidedBy: "monitors" | "visual_range" = "monitors";
+
+  if (used.length > 1 && band.id !== bandFor(policy, low).id) {
+    confidence = "advisory";
+    reasons.push(`Monitors disagree about which band applies (${bandFor(policy, low).aqiCategory} to ${band.aqiCategory}). CHSAA directs that the worse assessment is followed, so the call is made on AQI ${decidedOnAqi}.`);
+  } else if (used.length > 1 && high !== low) {
+    reasons.push(`Decided on AQI ${decidedOnAqi}, the worst of the monitors used, so the call errs toward caution.`);
   }
 
-  const band = bandFor(policy, decidedOnPm25);
-  const rule = ruleFor(policy, band, intensity, sensitiveAthletes);
-  reasons.push(`${decidedOnPm25} ug/m3 falls in the ${band.aqiCategory} band.`);
+  // A visual range check is a second assessment under that same rule.
+  if (visibilityBandId) {
+    const visBand = policy.bands.find((b) => b.id === visibilityBandId);
+    if (visBand && bandRank(policy, visBand.id) > bandRank(policy, band.id)) {
+      reasons.push(`Your visual range check indicates ${visBand.aqiCategory}, worse than the ${band.aqiCategory} the monitors measured at AQI ${decidedOnAqi}. CHSAA directs you to follow the worse of the two, so the call uses your observation.`);
+      band = visBand;
+      decidedBy = "visual_range";
+      confidence = "advisory";
+    } else if (visBand) {
+      reasons.push(`Your visual range check indicates ${visBand.aqiCategory}, which agrees with or is better than the monitors. The monitor reading stands.`);
+    }
+  }
 
+  reasons.push(
+    decidedBy === "visual_range"
+      ? `The call is made on the ${band.aqiCategory} band, from your visual range check rather than a measured AQI.`
+      : `AQI ${decidedOnAqi} falls in the ${band.aqiCategory} band.`,
+  );
+
+  const rule = ruleFor(policy, band, intensity, sensitiveAthletes);
   if (!rule) {
     reasons.push("No policy rule matched this combination, which is a gap in the policy file rather than a safe condition.");
-    return { ...base, action: null, confidence: "insufficient", estimate: { value, low, high }, decidedOnPm25, band, rule: null };
+    return { ...unavailable, estimate: { low, high }, decidedOnAqi, decidedOnPm25: worst.nowcastPm25, band, decidedBy };
   }
 
   let action = rule.action;
@@ -191,13 +266,16 @@ export function decide(input: DecideInput): Decision {
     reasons.push("Upgraded from 'proceed' to 'proceed with precautions' because the evidence is advisory.");
   }
 
-  return { ...base, action, confidence, estimate: { value, low, high }, decidedOnPm25, band, rule };
+  return {
+    ...base, action, confidence, estimate: { low, high },
+    decidedOnAqi, decidedOnPm25: worst.nowcastPm25, band, rule, decidedBy,
+  };
 }
 
 /**
  * Given decisions for each local hour, find the nearest hour to `targetHour` with a
  * materially better call. Returns null when no hour in the day is better, which is
- * itself the useful answer: on 2021-08-07 Boulder had no clean window after 9am.
+ * itself the useful answer: on 2024-08-01 Boulder's clear window was behind it by 9am.
  */
 export function suggestAlternative(
   hours: { hour: number; decision: Decision }[], targetHour: number,

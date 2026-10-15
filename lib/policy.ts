@@ -8,7 +8,8 @@ export type Action =
   | "move_indoors"
   | "cancel";
 
-export type Band = { id: string; maxPm25: number | null; aqiCategory: string };
+/** Bands are AQI ranges now, because CHSAA's guidance is keyed on AQI. */
+export type Band = { id: string; maxAqi: number | null; aqiCategory: string };
 
 export type Rule = {
   id: string;
@@ -26,14 +27,19 @@ export type Policy = {
   pollutant: string;
   disclaimer: string;
   sources: { id: string; title: string; url: string; verified: boolean; note: string }[];
+  basis: string;
   evidence: {
     searchRadiusMiles: number;
     maxTrustedDistanceMiles: number;
     maxReadingAgeMinutes: number;
-    maxMonitorSpreadUgM3: number;
     note: string;
   };
-  intensities: { id: IntensityId; label: string; ventilationMultiplier: number }[];
+  visibility: {
+    note: string;
+    /** The band a coach's own visual range check corresponds to. */
+    scale: { band: string; label: string }[];
+  };
+  intensities: { id: IntensityId; label: string; light: boolean }[];
   bands: Band[];
   rules: Rule[];
 };

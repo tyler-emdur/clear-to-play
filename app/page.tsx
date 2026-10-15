@@ -23,6 +23,7 @@ const BAND_COLOR: Record<string, string> = {
 type HourCell = {
   hour: number;
   awaitingData: boolean;
+  aqi: number | null;
   pm25: number | null;
   action: Action | null;
   confidence: string;
@@ -30,9 +31,10 @@ type HourCell = {
 };
 
 type Monitor = {
-  siteName: string; distanceMiles: number; value: number;
+  siteName: string; distanceMiles: number;
+  rawPm25: number; nowcastPm25: number | null; aqi: number | null;
   ageMinutes: number; used: boolean; excluded?: string;
-  excludedCode?: "future" | "stale" | "distance";
+  excludedCode?: "future" | "stale" | "distance" | "no_nowcast";
 };
 
 // The table already carries distance and reading age in their own columns, so the
@@ -41,6 +43,7 @@ const EXCLUDED_SHORT: Record<string, string> = {
   distance: "too far",
   stale: "too old",
   future: "stamped after the window",
+  no_nowcast: "too few hours reported",
 };
 
 type Day = {
@@ -52,6 +55,8 @@ type Day = {
     action: Action | null;
     confidence: "firm" | "advisory" | "insufficient";
     estimate: { value: number; low: number; high: number } | null;
+    decidedOnAqi: number | null;
+    decidedBy: "monitors" | "visual_range";
     decidedOnPm25: number | null;
     band: { id: string; aqiCategory: string } | null;
     rule: { id: string; rationale: string; precautions: string[] } | null;
@@ -61,9 +66,10 @@ type Day = {
   };
   latestWithReadings: number | null;
   strip: HourCell[];
-  alternative: { hour: number; pm25: number | null; action: Action | null; band: string | null } | null;
+  alternative: { hour: number; aqi: number | null; pm25: number | null; action: Action | null; band: string | null } | null;
   policy: {
-    version: string; jurisdiction: string; disclaimer: string;
+    version: string; jurisdiction: string; disclaimer: string; basis: string;
+    visibility: { note: string; scale: { band: string; label: string }[] };
     sources: { id: string; title: string; url: string; verified: boolean; note: string }[];
   };
 };
@@ -94,6 +100,7 @@ export default function Page() {
   const [hour, setHour] = useState(() => Math.max(0, denverHour() - 1));
   const [intensity, setIntensity] = useState<IntensityId>("vigorous");
   const [sensitive, setSensitive] = useState(false);
+  const [visibility, setVisibility] = useState("");
   const [day, setDay] = useState<Day | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
@@ -103,7 +110,8 @@ export default function Page() {
     const ctl = new AbortController();
     setPending(true);
     const q = new URLSearchParams({
-      place: placeId, date, hour: String(hour), intensity, sensitive: sensitive ? "1" : "0",
+      place: placeId, date, hour: String(hour), intensity,
+      sensitive: sensitive ? "1" : "0", visibility,
     });
     fetch(`/api/day?${q}`, { signal: ctl.signal })
       .then(async (r) => {
@@ -127,10 +135,10 @@ export default function Page() {
       })
       .finally(() => setPending(false));
     return () => ctl.abort();
-  }, [placeId, date, hour, intensity, sensitive]);
+  }, [placeId, date, hour, intensity, sensitive, visibility]);
 
   const peak = useMemo(
-    () => Math.max(60, ...(day?.strip ?? []).map((c) => c.pm25 ?? 0)),
+    () => Math.max(150, ...(day?.strip ?? []).map((c) => c.aqi ?? 0)),
     [day],
   );
 
@@ -145,26 +153,33 @@ export default function Page() {
       `${day.place.name} · ${prettyDate(day.date)} · practice window ${hourLabel(day.hour)}`,
       `Activity: ${INTENSITIES.find((i) => i.id === intensity)?.label}`,
       `Athletes with asthma or a respiratory condition on the field: ${sensitive ? "yes" : "no"}`,
+      `Visual range check: ${
+        day.policy.visibility.scale.find((v) => v.band === visibility)?.label ?? "not checked"
+      }`,
       ``,
       `CALL: ${sel.action ? ACTION_LABEL[sel.action].toUpperCase() : "NO CALL — EVIDENCE INSUFFICIENT"}`,
-      sel.decidedOnPm25 !== null ? `PM2.5 used: ${sel.decidedOnPm25} ug/m3 (${sel.band?.aqiCategory})` : ``,
+      sel.decidedOnAqi !== null
+        ? `AQI used: ${sel.decidedOnAqi} (${sel.band?.aqiCategory}), from a NowCast of ${sel.decidedOnPm25} ug/m3`
+        : ``,
       `Confidence: ${sel.confidence}`,
       sel.rule ? `Policy rule: ${sel.rule.id} — ${sel.rule.rationale}` : ``,
       sel.rule?.precautions.length ? `Required: ${sel.rule.precautions.join("; ")}` : ``,
       ``,
       `Monitors consulted:`,
       ...sel.monitors.map(
-        (m) => `  ${m.siteName} — ${m.distanceMiles} mi, ${m.value} ug/m3, ${m.ageMinutes} min old` +
+        (m) => `  ${m.siteName} — ${m.distanceMiles} mi, AQI ${m.aqi ?? "n/a"}` +
+          ` (raw ${m.rawPm25} ug/m3 this hour), ${m.ageMinutes} min old` +
           (m.used ? "" : ` [not used: ${m.excluded}]`),
       ),
       ``,
       `Reasoning:`,
       ...sel.reasons.map((r) => `  - ${r}`),
       ``,
-      `Policy ${sel.policyVersion}. Observations from the EPA AirNow hourly file feed.`,
+      `Policy ${sel.policyVersion} (${day.policy.jurisdiction}). AQI basis: ${day.policy.basis}.`,
+      `Observations from the EPA AirNow hourly file feed.`,
     ];
     navigator.clipboard?.writeText(lines.filter((l) => l !== "").join("\n"));
-  }, [day, sel, intensity, sensitive]);
+  }, [day, sel, intensity, sensitive, visibility]);
 
   return (
     <div className="shell" data-pending={pending ? 1 : 0}>
@@ -200,6 +215,16 @@ export default function Page() {
           <select value={hour} onChange={(e) => setHour(Number(e.target.value))}>
             {Array.from({ length: 24 }, (_, h) => (
               <option key={h} value={h}>{hourLabel(h)}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>How far can you see?</span>
+          <select value={visibility} onChange={(e) => setVisibility(e.target.value)}>
+            <option value="">Not checked</option>
+            {(day?.policy.visibility.scale ?? []).map((v) => (
+              <option key={v.band} value={v.band}>{v.label}</option>
             ))}
           </select>
         </label>
@@ -241,9 +266,15 @@ export default function Page() {
               {sel.action ? (
                 <>
                   <div className="readout">
-                    <span className="conc">
-                      {sel.decidedOnPm25}<small>µg/m³ PM2.5</small>
-                    </span>
+                    {sel.decidedBy === "visual_range" ? (
+                      <span className="conc vis">
+                        Visual range<small>monitors read AQI {sel.decidedOnAqi}</small>
+                      </span>
+                    ) : (
+                      <span className="conc">
+                        {sel.decidedOnAqi}<small>AQI</small>
+                      </span>
+                    )}
                     <span className="bandname">{sel.band?.aqiCategory}</span>
                     <span className="chip" data-c={sel.confidence}>
                       {sel.confidence === "firm" ? "firm call" : "advisory only"}
@@ -255,7 +286,7 @@ export default function Page() {
                   {day.alternative && (
                     <p className="instead">
                       Better window today: <b>{hourLabel(day.alternative.hour)}</b> at{" "}
-                      {day.alternative.pm25} µg/m³, where the call becomes{" "}
+                      AQI {day.alternative.aqi}, where the call becomes{" "}
                       <b>{day.alternative.action ? ACTION_LABEL[day.alternative.action].toLowerCase() : "unknown"}</b>.
                     </p>
                   )}
@@ -286,8 +317,8 @@ export default function Page() {
                   data-sel={c.hour === day.hour ? 1 : 0}
                   data-alt={day.alternative?.hour === c.hour ? 1 : 0}
                   title={
-                    c.pm25 !== null
-                      ? `${hourLabel(c.hour)} — ${c.pm25} µg/m³`
+                    c.aqi !== null
+                      ? `${hourLabel(c.hour)} — AQI ${c.aqi}${c.pm25 !== null ? ` (${c.pm25} µg/m³ NowCast)` : ""}`
                       : c.awaitingData
                         ? `${hourLabel(c.hour)} — no readings yet`
                         : `${hourLabel(c.hour)} — no usable reading`
@@ -295,7 +326,7 @@ export default function Page() {
                 >
                   <i
                     style={{
-                      height: `${c.pm25 === null ? 3 : Math.max(3, Math.sqrt(c.pm25 / peak) * 100)}%`,
+                      height: `${c.aqi === null ? 3 : Math.max(3, Math.sqrt(c.aqi / peak) * 100)}%`,
                       background: c.band ? BAND_COLOR[c.band] : "var(--band-unknown)",
                     }}
                   />
@@ -308,7 +339,7 @@ export default function Page() {
               ))}
             </div>
             <p className="scalenote">
-              Bars are square-root scaled to a {Math.round(peak)} µg/m³ peak. Grey bars are hours with no
+              Bars are square-root scaled to an AQI {Math.round(peak)} peak. Grey bars are hours with no
               usable reading, or none published yet. The caret marks the better window.
             </p>
           </section>
@@ -320,15 +351,16 @@ export default function Page() {
                 <tr>
                   <th>Station</th>
                   <th className="num">Distance</th>
-                  <th className="num">PM2.5</th>
-                  <th className="num">Reading age</th>
+                  <th className="num">AQI</th>
+                  <th className="num">This hour</th>
+                  <th className="num">Age</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {sel.monitors.length === 0 && (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       {day.strip[day.hour]?.awaitingData
                         ? "This hour has no readings yet, so no monitor was consulted."
                         : "No PM2.5 monitor within range of this location."}
@@ -339,7 +371,8 @@ export default function Page() {
                   <tr key={m.siteName} data-used={m.used ? 1 : 0}>
                     <td>{m.siteName}</td>
                     <td className="num">{m.distanceMiles} mi</td>
-                    <td className="num">{m.value}</td>
+                    <td className="num">{m.aqi ?? "—"}</td>
+                    <td className="num">{m.rawPm25} <small>µg/m³</small></td>
                     <td className="num">{m.ageMinutes} min</td>
                     <td>
                       {m.used ? "used" : (

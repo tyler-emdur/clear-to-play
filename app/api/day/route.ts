@@ -25,6 +25,7 @@ export async function GET(request: Request) {
       placeId: q.get("place") ?? "boulder-high",
       date, hour, intensity,
       sensitive: q.get("sensitive") === "1",
+      visibilityBandId: q.get("visibility") || null,
     });
     return NextResponse.json(day);
   } catch (err) {

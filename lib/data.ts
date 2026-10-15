@@ -1,4 +1,4 @@
-import policyJson from "../policy/boulder-default.json";
+import policyJson from "../policy/chsaa-colorado.json";
 import {
   hourlyUrl, localHourToUtc, parseHourly, parseSites, SITES_URL,
   type Observation, type Site,
@@ -10,6 +10,8 @@ import { PLACES } from "./places";
 export const policy = policyJson as unknown as Policy;
 
 const DAY = 86_400;
+/** EPA's NowCast window. */
+const NOWCAST_HOURS = 12;
 
 async function text(url: string, revalidate: number | false) {
   const res = await fetch(url, { next: { revalidate } });
@@ -47,12 +49,15 @@ export type DayRequest = {
   hour: number;
   intensity: IntensityId;
   sensitive: boolean;
+  /** Band id from the coach's own visual range check, if they did one. */
+  visibilityBandId?: string | null;
 };
 
 export type HourCell = {
   hour: number;
   /** True when the hour simply has no readings yet, rather than no usable ones. */
   awaitingData: boolean;
+  aqi: number | null;
   pm25: number | null;
   action: Decision["action"];
   confidence: Decision["confidence"];
@@ -68,28 +73,60 @@ export async function buildDay(req: DayRequest) {
 
   const sites = await loadSites();
   const now = today.getTime();
-  const hours = await Promise.all(
-    Array.from({ length: 24 }, (_, hour) => loadHour(y, m, d, hour, isToday, now)),
-  );
 
-  const decisions = hours.map(({ at, observations, feed }, hour) => ({
-    hour,
-    decision: decide({
-      policy, place, sites, observations, at, feed,
-      intensity: req.intensity, sensitiveAthletes: req.sensitive,
-    }),
+  // EPA's NowCast needs the 12 hours ending at each decision hour, so the window
+  // reaches 11 hours back past midnight into the previous local day.
+  const hours = await Promise.all(
+    Array.from({ length: 24 + NOWCAST_HOURS - 1 }, (_, i) =>
+      loadHour(y, m, d, i - (NOWCAST_HOURS - 1), isToday, now)),
+  );
+  const dayStart = NOWCAST_HOURS - 1;
+
+  /** Station key -> the 12 concentrations ending at local `hour`, newest first. */
+  function historyFor(hour: number): Map<string, (number | null)[]> {
+    const out = new Map<string, (number | null)[]>();
+    const seen = new Set<string>();
+    for (let back = 0; back < NOWCAST_HOURS; back++) {
+      for (const o of hours[dayStart + hour - back]?.observations ?? []) seen.add(o.stationKey);
+    }
+    for (const key of seen) {
+      out.set(key, Array.from({ length: NOWCAST_HOURS }, (_, back) => {
+        const slot = hours[dayStart + hour - back];
+        const hit = slot?.observations.find((o) => o.stationKey === key);
+        return hit ? hit.value : null;
+      }));
+    }
+    return out;
+  }
+
+  function decideHour(hour: number, visibilityBandId: string | null) {
+    const { at, observations, feed } = hours[dayStart + hour];
+    return decide({
+      policy, place, sites, observations, history: historyFor(hour), at, feed,
+      intensity: req.intensity, sensitiveAthletes: req.sensitive, visibilityBandId,
+    });
+  }
+
+  // The whole day is decided on monitors alone. A visual range check is one
+  // observation made at one moment; applying it to all 24 hours would claim the
+  // coach looked outside at 3am. It is applied to the chosen window only.
+  const decisions = Array.from({ length: 24 }, (_, hour) => ({
+    hour, decision: decideHour(hour, null),
   }));
 
   const strip: HourCell[] = decisions.map(({ hour, decision }) => ({
     hour,
-    awaitingData: hours[hour].feed !== "ok",
+    awaitingData: hours[dayStart + hour].feed !== "ok",
+    aqi: decision.decidedOnAqi,
     pm25: decision.decidedOnPm25,
     action: decision.action,
     confidence: decision.confidence,
     band: decision.band?.id ?? null,
   }));
 
-  const selected = decisions[req.hour]?.decision ?? decisions[0].decision;
+  const selected = req.visibilityBandId
+    ? decideHour(req.hour, req.visibilityBandId)
+    : decisions[req.hour]?.decision ?? decisions[0].decision;
   const alternative = suggestAlternative(decisions, req.hour);
   // The most recent hour the feed can actually answer for, so a refusal on an
   // hour that isn't out yet can point somewhere useful instead of dead-ending.
@@ -107,6 +144,7 @@ export async function buildDay(req: DayRequest) {
     alternative: alternative
       ? {
           hour: alternative.hour,
+          aqi: alternative.decision.decidedOnAqi,
           pm25: alternative.decision.decidedOnPm25,
           action: alternative.decision.action,
           band: alternative.decision.band?.aqiCategory ?? null,
@@ -117,6 +155,8 @@ export async function buildDay(req: DayRequest) {
       jurisdiction: policy.jurisdiction,
       sources: policy.sources,
       disclaimer: policy.disclaimer,
+      basis: policy.basis,
+      visibility: policy.visibility,
     },
   };
 }

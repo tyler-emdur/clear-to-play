@@ -1,0 +1,158 @@
+{
+  "policyVersion": "chsaa-colorado-1.0.0",
+  "jurisdiction": "Colorado high school athletics",
+  "pollutant": "PM2.5",
+  "basis": "AQI (NowCast)",
+  "disclaimer": "This app applies CHSAA's published guidance to monitor readings near a chosen school. It is not a CHSAA or district product, and it does not replace the judgement of the athletic director, athletic trainer, or coach on site. CHSAA directs schools to compare the AQI against their own visual inspection and follow the worse of the two.",
+  "sources": [
+    {
+      "id": "chsaa-smoke-2026",
+      "title": "CHSAA / CDPHE — Guidance for School Athletic Activities During High Pollution/Smoke Events (Mar 25, 2026)",
+      "url": "https://chsaa-media.sfo3.cdn.digitaloceanspaces.com/wp-content/uploads/2026/03/25150421/Guidance_for_School_Athletic_Activities_During_High_Pollution_Smoke_Events.pdf",
+      "verified": true,
+      "note": "Every band and action below is transcribed from the Athletic Events/Practices (2-3 hours) column of this document."
+    },
+    {
+      "id": "epa-aqi-2024",
+      "title": "EPA — PM NAAQS Air Quality Index fact sheet (2024 revision)",
+      "url": "https://www.epa.gov/system/files/documents/2024-02/pm-naaqs-air-quality-index-fact-sheet.pdf",
+      "verified": true,
+      "note": "PM2.5 breakpoints as revised in May 2024: the Good band ends at 9.0 ug/m3, Unhealthy at 125.4. Implemented in lib/aqi.ts and checked against AirNow's own published AQI in the test suite."
+    },
+    {
+      "id": "airnow-nowcast",
+      "title": "AirNow — the NowCast for PM2.5 and PM10",
+      "url": "https://forum.airnowtech.org/t/the-nowcast-for-pm2-5-and-pm10/172",
+      "verified": true,
+      "note": "The AQI CHSAA tells schools to look up is computed from the NowCast, a 12-hour weighted average, not from a single raw hourly concentration."
+    }
+  ],
+  "evidence": {
+    "searchRadiusMiles": 25,
+    "maxTrustedDistanceMiles": 10,
+    "maxReadingAgeMinutes": 120,
+    "note": "Colorado has roughly 32 active regulatory PM2.5 monitors statewide. Beyond maxTrustedDistanceMiles a reading describes a different airshed, so it is excluded rather than averaged in. On 2024-08-01 at 5am Longmont read 152.7 ug/m3 while Boulder CU read 25.2 in the same hour, 14 miles apart. When monitors that are close enough to use land in different bands, the engine follows CHSAA's own instruction for conflicting assessments and takes the worse one, at advisory confidence."
+  },
+  "visibility": {
+    "note": "CHSAA directs schools to do a visual range check alongside the AQI and follow the recommendations for the worse of the two assessments. To do it: go outside, face away from the sun, and find the distance at which even high-contrast objects disappear.",
+    "scale": [
+      { "band": "good", "label": "More than 5 miles, no noticeable haze" },
+      { "band": "moderate", "label": "5 to 15 miles with noticeable haze" },
+      { "band": "usg", "label": "3 to 5 miles" },
+      { "band": "unhealthy", "label": "1 to 3 miles" },
+      { "band": "very-unhealthy", "label": "1 mile or less" }
+    ]
+  },
+  "intensities": [
+    { "id": "rest", "label": "Standing, rest, spectating", "light": true },
+    { "id": "light", "label": "Walking, light drills, marching band", "light": true },
+    { "id": "moderate", "label": "Easy run, skills practice", "light": false },
+    { "id": "vigorous", "label": "Intervals, race pace, full scrimmage", "light": false }
+  ],
+  "bands": [
+    { "id": "good", "aqiCategory": "Good", "maxAqi": 50 },
+    { "id": "moderate", "aqiCategory": "Moderate", "maxAqi": 100 },
+    { "id": "usg", "aqiCategory": "Unhealthy for Sensitive Groups", "maxAqi": 150 },
+    { "id": "unhealthy", "aqiCategory": "Unhealthy", "maxAqi": 200 },
+    { "id": "very-unhealthy", "aqiCategory": "Very Unhealthy", "maxAqi": 300 },
+    { "id": "hazardous", "aqiCategory": "Hazardous", "maxAqi": null }
+  ],
+  "rules": [
+    {
+      "id": "good-all",
+      "band": "good",
+      "intensity": "any",
+      "sensitive": "any",
+      "action": "proceed",
+      "precautions": [],
+      "rationale": "CHSAA, AQI 0-50: great day to be active outdoors."
+    },
+    {
+      "id": "moderate-sensitive",
+      "band": "moderate",
+      "intensity": "any",
+      "sensitive": true,
+      "action": "proceed_with_precautions",
+      "precautions": [
+        "Watch athletes who are unusually sensitive to air pollution",
+        "Increase rest periods and make substitutions for these students as needed",
+        "Athletes with an asthma action plan should follow it, with rescue inhalers available",
+        "Reduce or cease activity if symptoms arise"
+      ],
+      "rationale": "CHSAA, AQI 51-100: watch unusually sensitive athletes, increase rest periods and substitute as needed."
+    },
+    {
+      "id": "moderate-all",
+      "band": "moderate",
+      "intensity": "any",
+      "sensitive": "any",
+      "action": "proceed",
+      "precautions": [
+        "Look for symptoms of shortness of breath or coughing",
+        "Reduce or cease activity if symptoms arise"
+      ],
+      "rationale": "CHSAA, AQI 51-100: no restriction for athletes without a respiratory condition, but monitor for symptoms."
+    },
+    {
+      "id": "usg-sensitive",
+      "band": "usg",
+      "intensity": "any",
+      "sensitive": true,
+      "action": "move_indoors",
+      "precautions": [
+        "CHSAA directs that activities move indoors for athletes sensitive to air pollution in this band",
+        "Athletes with an asthma action plan should follow it, with rescue inhalers available"
+      ],
+      "rationale": "CHSAA, AQI 101-150: move activities indoors for athletes sensitive to air pollution."
+    },
+    {
+      "id": "usg-active",
+      "band": "usg",
+      "intensity": ["moderate", "vigorous"],
+      "sensitive": "any",
+      "action": "reduce_intensity",
+      "precautions": [
+        "Limit athletes to light outdoor activity, or move the activity indoors",
+        "Increase rest periods and make substitutions",
+        "Reduce or cease activity if symptoms arise"
+      ],
+      "rationale": "CHSAA, AQI 101-150: limit athletes to light outdoor activities or move the activities indoors."
+    },
+    {
+      "id": "usg-light",
+      "band": "usg",
+      "intensity": ["rest", "light"],
+      "sensitive": "any",
+      "action": "proceed_with_precautions",
+      "precautions": [
+        "This session is already light, which is what CHSAA limits athletes to in this band",
+        "Increase rest periods and make substitutions",
+        "Reduce or cease activity if symptoms arise"
+      ],
+      "rationale": "CHSAA, AQI 101-150: light outdoor activity is the permitted level in this band."
+    },
+    {
+      "id": "unhealthy-all",
+      "band": "unhealthy",
+      "intensity": "any",
+      "sensitive": "any",
+      "action": "cancel",
+      "precautions": [
+        "CHSAA lists the options as cancel, move indoors, postpone, or move to an area with good air quality"
+      ],
+      "rationale": "CHSAA, AQI 151-200: consider cancelling, moving indoors, postponing, or relocating the event."
+    },
+    {
+      "id": "very-unhealthy-all",
+      "band": ["very-unhealthy", "hazardous"],
+      "intensity": "any",
+      "sensitive": "any",
+      "action": "cancel",
+      "precautions": [
+        "CHSAA states the risk of health effects is increased for everyone in this band",
+        "CHSAA lists the options as cancel, move indoors, postpone, or move to an area with good air quality"
+      ],
+      "rationale": "CHSAA, AQI 201 and higher: cancel, move indoors, postpone, or relocate. The risk of health effects is increased for everyone."
+    }
+  ]
+}

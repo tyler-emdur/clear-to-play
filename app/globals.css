@@ -92,6 +92,8 @@ body { font-variant-numeric: tabular-nums; }
 .readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; }
 .readout .conc { font-size: 24px; font-weight: 600; }
 .readout .conc small { font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 3px; }
+/* A visual range check has no number of its own, so it is named, not numbered. */
+.readout .conc.vis { font-size: 18px; }
 .readout .bandname { font-size: 16px; }
 .chip {
   font-size: 12.5px; padding: 3px 8px; border-radius: 2px;
