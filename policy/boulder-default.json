@@ -1,0 +1,88 @@
+{
+  "policyVersion": "boulder-default-0.1.0",
+  "jurisdiction": "Boulder, Colorado — unofficial default policy",
+  "pollutant": "PM2.5",
+  "disclaimer": "This is a configurable default, not an official district policy. A school may fork this file and change any row. Every decision this app produces names the policy version and rule id that produced it.",
+  "sources": [
+    {
+      "id": "epa-aqi-2024",
+      "title": "EPA PM2.5 AQI breakpoints",
+      "url": "https://www.airnow.gov/aqi/aqi-basics/",
+      "verified": false,
+      "note": "TODO VERIFY: transcribe the breakpoint table from the official source. EPA revised the PM2.5 breakpoints in 2024 (the Good band moved from 12.0 to 9.0 ug/m3). Do not ship unverified."
+    },
+    {
+      "id": "cdphe-smoke",
+      "title": "CDPHE wildfire smoke and health guidance",
+      "url": "https://cdphe.colorado.gov/wildfire-smoke-and-health",
+      "verified": false,
+      "note": "TODO VERIFY: Colorado's published guidance names asthma and respiratory conditions as risk factors and discusses activity reduction. Transcribe its actual activity thresholds here rather than inventing them."
+    }
+  ],
+  "evidence": {
+    "searchRadiusMiles": 25,
+    "maxTrustedDistanceMiles": 10,
+    "maxReadingAgeMinutes": 120,
+    "maxMonitorSpreadUgM3": 15,
+    "note": "Colorado has roughly 32 active PM2.5 monitors statewide. Beyond maxTrustedDistanceMiles a reading describes a different airshed, so the engine reports advisory confidence instead of a firm call. On 2021-08-07 Longmont read 121.0 while Boulder CU read 74.6 in the same hour, 14 miles apart — which is why spread is a gate."
+  },
+  "intensities": [
+    { "id": "rest",     "label": "Standing, rest, spectating",        "ventilationMultiplier": 1.0 },
+    { "id": "light",    "label": "Walking, light drills, marching band", "ventilationMultiplier": 2.5 },
+    { "id": "moderate", "label": "Easy run, skills practice",          "ventilationMultiplier": 4.0 },
+    { "id": "vigorous", "label": "Intervals, race pace, full scrimmage","ventilationMultiplier": 6.0 }
+  ],
+  "bands": [
+    { "id": "good",           "maxPm25": 9.0,   "aqiCategory": "Good" },
+    { "id": "moderate",       "maxPm25": 35.4,  "aqiCategory": "Moderate" },
+    { "id": "usg",            "maxPm25": 55.4,  "aqiCategory": "Unhealthy for Sensitive Groups" },
+    { "id": "unhealthy",      "maxPm25": 125.4, "aqiCategory": "Unhealthy" },
+    { "id": "very-unhealthy", "maxPm25": 225.4, "aqiCategory": "Very Unhealthy" },
+    { "id": "hazardous",      "maxPm25": null,  "aqiCategory": "Hazardous" }
+  ],
+  "rules": [
+    { "id": "good-all", "band": "good", "intensity": "any", "sensitive": "any",
+      "action": "proceed", "precautions": [],
+      "rationale": "Particulate is in the Good band. No activity restriction indicated." },
+
+    { "id": "mod-sensitive-vigorous", "band": "moderate", "intensity": ["vigorous"], "sensitive": true,
+      "action": "reduce_intensity", "precautions": ["Inhalers on the field", "Name a staff member watching for symptoms"],
+      "rationale": "Hard exercise raises ventilation roughly sixfold, so a Moderate concentration delivers a much larger dose to an athlete with asthma than to a bystander." },
+
+    { "id": "mod-sensitive-moderate", "band": "moderate", "intensity": ["moderate"], "sensitive": true,
+      "action": "proceed_with_precautions", "precautions": ["Inhalers on the field", "Allow athletes to self-remove without penalty"],
+      "rationale": "Moderate band with sustained moderate exertion is tolerable for most sensitive athletes with precautions in place." },
+
+    { "id": "mod-all", "band": "moderate", "intensity": "any", "sensitive": "any",
+      "action": "proceed", "precautions": ["Watch for coughing or wheezing"],
+      "rationale": "Moderate band. No restriction indicated for athletes without a respiratory condition." },
+
+    { "id": "usg-sensitive", "band": "usg", "intensity": "any", "sensitive": true,
+      "action": "move_indoors", "precautions": ["Offer an equivalent indoor session"],
+      "rationale": "This band is defined by harm to sensitive groups. Sensitive athletes should not train outdoors in it at any intensity." },
+
+    { "id": "usg-vigorous", "band": "usg", "intensity": ["vigorous"], "sensitive": "any",
+      "action": "reduce_intensity", "precautions": ["No timed or maximal efforts", "Extend rest between reps"],
+      "rationale": "Vigorous effort multiplies inhaled dose enough to push an Unhealthy-for-Sensitive-Groups concentration into a harmful exposure for healthy athletes." },
+
+    { "id": "usg-moderate", "band": "usg", "intensity": ["moderate"], "sensitive": "any",
+      "action": "shorten", "precautions": ["Cap the session at 45 minutes"],
+      "rationale": "Dose scales with duration, so shortening the session is the proportionate response at this concentration." },
+
+    { "id": "usg-low", "band": "usg", "intensity": ["light", "rest"], "sensitive": "any",
+      "action": "proceed_with_precautions", "precautions": ["Keep exertion low", "Shade and water available"],
+      "rationale": "Low-ventilation activity at this concentration delivers a modest dose." },
+
+    { "id": "unhealthy-active", "band": "unhealthy", "intensity": ["vigorous", "moderate"], "sensitive": "any",
+      "action": "cancel", "precautions": ["Offer an indoor alternative if ventilation is filtered"],
+      "rationale": "Sustained exercise in the Unhealthy band is not made safe by modification. Cancel or move the session." },
+
+    { "id": "unhealthy-low", "band": "unhealthy", "intensity": ["light", "rest"], "sensitive": "any",
+      "action": "move_indoors", "precautions": ["Limit time outdoors in transit"],
+      "rationale": "Even low-exertion outdoor time is not advised in the Unhealthy band." },
+
+    { "id": "severe-all", "band": ["very-unhealthy", "hazardous"], "intensity": "any", "sensitive": "any",
+      "action": "cancel", "precautions": ["Keep students indoors", "Close windows and doors"],
+      "rationale": "At these concentrations outdoor activity is contraindicated for everyone." }
+  ]
+}

@@ -1,103 +1,334 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { PLACES } from "@/lib/places";
+import { ACTION_LABEL, type Action, type IntensityId } from "@/lib/policy";
+
+const INTENSITIES: { id: IntensityId; label: string }[] = [
+  { id: "rest", label: "Standing or spectating" },
+  { id: "light", label: "Walking, light drills, marching band" },
+  { id: "moderate", label: "Easy run, skills practice" },
+  { id: "vigorous", label: "Intervals, race pace, full scrimmage" },
+];
+
+const BAND_COLOR: Record<string, string> = {
+  good: "var(--band-good)",
+  moderate: "var(--band-moderate)",
+  usg: "var(--band-usg)",
+  unhealthy: "var(--band-unhealthy)",
+  "very-unhealthy": "var(--band-very-unhealthy)",
+  hazardous: "var(--band-hazardous)",
+};
+
+type HourCell = {
+  hour: number;
+  pm25: number | null;
+  action: Action | null;
+  confidence: string;
+  band: string | null;
+};
+
+type Monitor = {
+  siteName: string; distanceMiles: number; value: number;
+  ageMinutes: number; used: boolean; excluded?: string;
+};
+
+type Day = {
+  place: { id: string; name: string; note?: string };
+  date: string;
+  isToday: boolean;
+  hour: number;
+  selected: {
+    action: Action | null;
+    confidence: "firm" | "advisory" | "insufficient";
+    estimate: { value: number; low: number; high: number } | null;
+    decidedOnPm25: number | null;
+    band: { id: string; aqiCategory: string } | null;
+    rule: { id: string; rationale: string; precautions: string[] } | null;
+    reasons: string[];
+    monitors: Monitor[];
+    policyVersion: string;
+  };
+  strip: HourCell[];
+  alternative: { hour: number; pm25: number | null; action: Action | null; band: string | null } | null;
+  policy: {
+    version: string; jurisdiction: string; disclaimer: string;
+    sources: { id: string; title: string; url: string; verified: boolean; note: string }[];
+  };
+};
+
+const denverToday = () =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "America/Denver" }).format(new Date());
+const denverHour = () =>
+  Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Denver", hour12: false, hour: "2-digit" })
+    .format(new Date())) % 24;
+
+const hourLabel = (h: number) =>
+  `${h % 12 === 0 ? 12 : h % 12}${h < 12 ? " AM" : " PM"}`;
+
+const prettyDate = (iso: string) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+};
+
+export default function Page() {
+  const [placeId, setPlaceId] = useState("boulder-high");
+  const [date, setDate] = useState(denverToday);
+  const [hour, setHour] = useState(() => Math.max(0, denverHour() - 1));
+  const [intensity, setIntensity] = useState<IntensityId>("vigorous");
+  const [sensitive, setSensitive] = useState(false);
+  const [day, setDay] = useState<Day | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(true);
+
+  useEffect(() => {
+    const ctl = new AbortController();
+    setPending(true);
+    const q = new URLSearchParams({
+      place: placeId, date, hour: String(hour), intensity, sensitive: sensitive ? "1" : "0",
+    });
+    fetch(`/api/day?${q}`, { signal: ctl.signal })
+      .then(async (r) => {
+        const json = await r.json();
+        if (!r.ok) throw new Error(json.error ?? `request failed (${r.status})`);
+        return json as Day;
+      })
+      .then((d) => { setDay(d); setError(null); })
+      .catch((e: unknown) => {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        setError(e instanceof Error ? e.message : "something went wrong");
+      })
+      .finally(() => setPending(false));
+    return () => ctl.abort();
+  }, [placeId, date, hour, intensity, sensitive]);
+
+  const peak = useMemo(
+    () => Math.max(60, ...(day?.strip ?? []).map((c) => c.pm25 ?? 0)),
+    [day],
+  );
+
+  const sel = day?.selected;
+  const keyColor = sel?.band ? BAND_COLOR[sel.band.id] ?? "var(--band-unknown)" : "var(--band-unknown)";
+
+  const copyRecord = useCallback(() => {
+    if (!day || !sel) return;
+    const lines = [
+      `CLEAR TO PLAY — decision record`,
+      `${day.place.name} · ${prettyDate(day.date)} · practice window ${hourLabel(day.hour)}`,
+      `Activity: ${INTENSITIES.find((i) => i.id === intensity)?.label}`,
+      `Athletes with asthma or a respiratory condition on the field: ${sensitive ? "yes" : "no"}`,
+      ``,
+      `CALL: ${sel.action ? ACTION_LABEL[sel.action].toUpperCase() : "NO CALL — EVIDENCE INSUFFICIENT"}`,
+      sel.decidedOnPm25 !== null ? `PM2.5 used: ${sel.decidedOnPm25} ug/m3 (${sel.band?.aqiCategory})` : ``,
+      `Confidence: ${sel.confidence}`,
+      sel.rule ? `Policy rule: ${sel.rule.id} — ${sel.rule.rationale}` : ``,
+      sel.rule?.precautions.length ? `Required: ${sel.rule.precautions.join("; ")}` : ``,
+      ``,
+      `Monitors consulted:`,
+      ...sel.monitors.map(
+        (m) => `  ${m.siteName} — ${m.distanceMiles} mi, ${m.value} ug/m3, ${m.ageMinutes} min old` +
+          (m.used ? "" : ` [not used: ${m.excluded}]`),
+      ),
+      ``,
+      `Reasoning:`,
+      ...sel.reasons.map((r) => `  - ${r}`),
+      ``,
+      `Policy ${sel.policyVersion}. Observations from the EPA AirNow hourly file feed.`,
+    ];
+    navigator.clipboard?.writeText(lines.filter((l) => l !== "").join("\n"));
+  }, [day, sel, intensity, sensitive]);
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="shell">
+      <header className="masthead">
+        <span className="wordmark">Clear to Play</span>
+        <span className="where">Boulder Valley schools</span>
+        <span className="stamp">
+          {day
+            ? day.isToday
+              ? `live AirNow monitor data, ${prettyDate(day.date)}`
+              : `historical replay of ${prettyDate(day.date)}`
+            : "reading AirNow"}
+        </span>
+      </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <div className="controls">
+        <label className="field">
+          <span>Location</span>
+          <select value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
+            {PLACES.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>Activity</span>
+          <select value={intensity} onChange={(e) => setIntensity(e.target.value as IntensityId)}>
+            {INTENSITIES.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>Practice window</span>
+          <select value={hour} onChange={(e) => setHour(Number(e.target.value))}>
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={h}>{hourLabel(h)}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>Date</span>
+          <input type="date" value={date} max={denverToday()} onChange={(e) => setDate(e.target.value)} />
+        </label>
+
+        <div className="field toggle">
+          <input id="sens" type="checkbox" checked={sensitive} onChange={(e) => setSensitive(e.target.checked)} />
+          <label htmlFor="sens">Asthma on the field</label>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+
+        <button
+          className="replay"
+          onClick={() => { setDate("2021-08-07"); setHour(16); }}
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          Load Aug 7, 2021 smoke day
+        </button>
+      </div>
+
+      {error && (
+        <div className="error">
+          Could not build a call: {error}. The AirNow feed may be unavailable for that hour.
+        </div>
+      )}
+
+      {!day && pending && <p className="loading">Reading monitor data…</p>}
+
+      {day && sel && (
+        <>
+          <section className="verdict">
+            <div className="key" style={{ background: keyColor }} aria-hidden />
+            <div className="body">
+              <h1 className="call">
+                {sel.action ? ACTION_LABEL[sel.action] : "No call"}
+              </h1>
+              {sel.action ? (
+                <>
+                  <div className="readout">
+                    <span className="conc">
+                      {sel.decidedOnPm25}<small>µg/m³ PM2.5</small>
+                    </span>
+                    <span className="bandname">{sel.band?.aqiCategory}</span>
+                    <span className="chip" data-c={sel.confidence}>
+                      {sel.confidence === "firm" ? "firm call" : "advisory only"}
+                    </span>
+                  </div>
+                  {sel.rule?.precautions.length ? (
+                    <p className="instead">Required: {sel.rule.precautions.join(" · ")}</p>
+                  ) : null}
+                  {day.alternative && (
+                    <p className="instead">
+                      Better window today: <b>{hourLabel(day.alternative.hour)}</b> at{" "}
+                      {day.alternative.pm25} µg/m³, where the call becomes{" "}
+                      <b>{day.alternative.action ? ACTION_LABEL[day.alternative.action].toLowerCase() : "unknown"}</b>.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="nocall">{sel.reasons[0]}</p>
+              )}
+            </div>
+          </section>
+
+          <section className="strip">
+            <h2>Hour by hour at {day.place.name}, {prettyDate(day.date)}</h2>
+            <div className="bars">
+              {day.strip.map((c) => (
+                <div
+                  key={c.hour}
+                  className="bar"
+                  data-sel={c.hour === day.hour ? 1 : 0}
+                  data-alt={day.alternative?.hour === c.hour ? 1 : 0}
+                  title={
+                    c.pm25 === null
+                      ? `${hourLabel(c.hour)} — no usable reading`
+                      : `${hourLabel(c.hour)} — ${c.pm25} µg/m³`
+                  }
+                >
+                  <i
+                    style={{
+                      height: `${c.pm25 === null ? 3 : Math.max(3, Math.sqrt(c.pm25 / peak) * 100)}%`,
+                      background: c.band ? BAND_COLOR[c.band] : "var(--band-unknown)",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="hourlabels">
+              {day.strip.map((c) => (
+                <span key={c.hour}>{c.hour % 6 === 0 ? hourLabel(c.hour).replace(" ", "") : ""}</span>
+              ))}
+            </div>
+            <p className="scalenote">
+              Bars are square-root scaled to a {Math.round(peak)} µg/m³ peak. Grey bars are hours with no
+              usable reading. The caret marks the better window.
+            </p>
+          </section>
+
+          <section className="evidence">
+            <h2>Monitors consulted</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th className="num">Distance</th>
+                  <th className="num">PM2.5</th>
+                  <th className="num">Reading age</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sel.monitors.length === 0 && (
+                  <tr><td colSpan={5}>No PM2.5 monitor within range of this location.</td></tr>
+                )}
+                {sel.monitors.map((m) => (
+                  <tr key={m.siteName} data-used={m.used ? 1 : 0}>
+                    <td>{m.siteName}</td>
+                    <td className="num">{m.distanceMiles} mi</td>
+                    <td className="num">{m.value}</td>
+                    <td className="num">{m.ageMinutes} min</td>
+                    <td>{m.used ? "used" : <span className="exc">{m.excluded}</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+
+          <section className="why">
+            <h2>How this call was reached</h2>
+            <ol>
+              {sel.reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ol>
+            <button className="record" onClick={copyRecord}>Copy decision record</button>
+          </section>
+
+          <footer className="foot">
+            <p>
+              Policy {day.policy.version} for {day.policy.jurisdiction}. {day.policy.disclaimer}
+            </p>
+            {day.policy.sources.map((s) => (
+              <p key={s.id}>
+                <a href={s.url} target="_blank" rel="noreferrer">{s.title}</a>
+                {!s.verified && <span className="unverified"> — thresholds not yet verified against this source</span>}
+              </p>
+            ))}
+            <p>
+              Observations come from the EPA AirNow hourly file feed. Colorado has roughly 32 active PM2.5
+              monitors, so many locations have no monitor close enough to support a call.
+            </p>
+          </footer>
+        </>
+      )}
     </div>
   );
 }

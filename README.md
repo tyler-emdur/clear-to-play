@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Clear to Play
 
-## Getting Started
+Smoke-day practice calls for Boulder Valley schools. Reads EPA AirNow monitor data for a
+school and a practice window, applies a published smoke policy, and returns a call with the
+evidence behind it — or declines when the nearest monitor is too far away to support one.
 
-First, run the development server:
+## Why it declines
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Colorado has roughly 32 active PM2.5 monitors statewide, and coverage is inverted relative to
+risk: Centennial HS in Fort Collins sits 0.1 mi from a monitor, while Estes Park HS is 26 mi
+and Middle Park HS in Granby is 36 mi from the nearest one. The engine treats distance,
+reading age, and disagreement between monitors as gates on whether a recommendation can be
+issued at all.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Why the answer has to be hourly and local
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+On Saturday 7 August 2021, the worst recent Front Range smoke day:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| local hour | Boulder CU | Ft. Collins CSU |
+|---|---|---|
+| 07:00 | 25.5 | 74.8 |
+| 16:00 | 78.0 | 27.3 |
 
-## Learn More
+Two towns 40 mi apart, same smoke event, opposite correct answers. "Move practice earlier" is
+right in Boulder and wrong in Fort Collins. Boulder also stayed between 44 and 78 µg/m³ from
+10:00 until midnight, so "wait until evening" fails in both. Neither heuristic works, which is
+the reason this tool reads the data instead of applying a rule of thumb.
 
-To learn more about Next.js, take a look at the following resources:
+## Data
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`https://files.airnowtech.org/airnow/<YYYY>/<YYYYMMDD>/HourlyData_<YYYYMMDDHH>.dat`
+`https://files.airnowtech.org/airnow/today/Monitoring_Site_Locations_V2.dat`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+No API key, no rate limit, archive back several years. The keyed `airnowapi.org` service is the
+usual choice and returned a 504 on first contact, so this uses the files. Both feeds are
+UTC-stamped and pipe-delimited. No CORS headers, so fetching happens server-side.
 
-## Deploy on Vercel
+## Policy as data
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`policy/boulder-default.json` holds the thresholds, the exercise-intensity multipliers, and the
+evidence gates, each row citing its source. A district can fork the file and change any row
+without touching code. Every decision names the policy version and the rule id that produced it.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Two sources are marked `"verified": false`. The thresholds must be transcribed from the official
+EPA AQI table and CDPHE guidance before this is relied on.
+
+## Layout
+
+    lib/airnow.ts    pure parsers for both AirNow feeds, plus timezone handling
+    lib/decide.ts    pure decision engine — no clock, no network
+    lib/data.ts      server-side fetching and caching
+    policy/          the policy file
+    test/fixtures/   24 h of real Colorado observations, 7 Aug 2021
+    test/            12 tests, including the Boulder/Fort Collins inversion
+
+## Running it
+
+    npm install
+    npm test
+    npm run dev
