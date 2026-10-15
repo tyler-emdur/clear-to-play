@@ -1,12 +1,22 @@
 import type { Metadata } from "next";
-import { Barlow_Condensed, IBM_Plex_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const display = Barlow_Condensed({
-  subsets: ["latin"], weight: ["600", "700"], variable: "--font-display",
+// Fonts are vendored in app/fonts rather than pulled from next/font/google:
+// the build no longer depends on reaching Google at build time, and no
+// request leaves the visitor's browser to render the page.
+const display = localFont({
+  variable: "--font-display",
+  display: "swap",
+  src: [
+    { path: "./fonts/barlow-condensed-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/barlow-condensed-700.woff2", weight: "700", style: "normal" },
+  ],
 });
-const body = IBM_Plex_Sans({
-  subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-body",
+const body = localFont({
+  variable: "--font-body",
+  display: "swap",
+  src: [{ path: "./fonts/ibm-plex-sans-variable.woff2", weight: "400 600", style: "normal" }],
 });
 
 export const metadata: Metadata = {
